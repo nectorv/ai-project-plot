@@ -1,0 +1,26 @@
+# Notebook (kept for compatibility)
+jupyter
+ipykernel
+ipython
+nest_asyncio
+
+# Pipeline core
+python-dotenv
+langchain
+langchain-openai
+langchain-core
+langchain-mcp-adapters
+pydantic
+pandas
+plotly
+
+# Backend
+fastapi
+uvicorn[standard]
+
+# Frontend
+streamlit
+requests
+
+# Tooling
+uv
