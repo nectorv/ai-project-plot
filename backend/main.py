@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -12,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from pipeline import (
+    ConversationStore,
     MCPClientPool,
     PipelineState,
     QueryRequest,
@@ -19,11 +21,12 @@ from pipeline import (
     normalize_and_validate,
     plan_plot,
     render_plot,
+    resolve_query,
     route_task,
 )
 
 # ---------------------------------------------------------------------------
-# Load .env — walk up from backend/ to find it
+# Load .env
 # ---------------------------------------------------------------------------
 _cwd = Path(__file__).parent.resolve()
 _dotenv_path = next(
@@ -34,7 +37,7 @@ if _dotenv_path:
     load_dotenv(_dotenv_path, override=True)
 
 # ---------------------------------------------------------------------------
-# Lifespan — pool is created once at startup, closed at shutdown
+# Lifespan — pool and conversation store are created once at startup
 # ---------------------------------------------------------------------------
 POOL_SIZE = int(os.getenv("MCP_POOL_SIZE", "3"))
 
@@ -45,8 +48,11 @@ async def lifespan(app: FastAPI):
     pool = MCPClientPool(size=POOL_SIZE)
     await pool.initialize()
     app.state.pool = pool
+
+    app.state.store = ConversationStore()
     print(f"[startup] Pool ready — {pool.available} clients available.")
     yield
+
     print("[shutdown] Closing MCP client pool...")
     await pool.close()
 
@@ -88,14 +94,32 @@ def _result(figure_json: str, plot_spec: dict, data_profile: dict) -> str:
 # ---------------------------------------------------------------------------
 # Pipeline generator
 # ---------------------------------------------------------------------------
-async def _run_pipeline(query: str, pool: MCPClientPool):
-    state = PipelineState(request=query)
+async def _run_pipeline(
+    original_query: str,
+    session_id: str,
+    pool: MCPClientPool,
+    store: ConversationStore,
+):
+    # Always send session_id first so the client can persist it
+    yield _sse({"type": "session", "session_id": session_id})
+
+    # --- Step 0: Resolve query using conversation history ---
+    history = store.get_history(session_id)
+    if history:
+        yield _step("Resolving query with conversation context...")
+        resolved_query = await resolve_query(original_query, history)
+        if resolved_query != original_query:
+            yield _sse({"type": "resolved", "original": original_query, "resolved": resolved_query})
+    else:
+        resolved_query = original_query
+
+    state = PipelineState(request=resolved_query)
 
     # --- Step 1: Route ---
     yield _step("Routing task...")
     state = route_task(state)
 
-    # --- Step 2: Extract (borrows a client from the pool) ---
+    # --- Step 2: Extract ---
     yield _step(f"Fetching data from Data Commons (pool: {pool.available}/{POOL_SIZE} free)...")
     try:
         async with pool.acquire() as (_, tools):
@@ -129,6 +153,11 @@ async def _run_pipeline(query: str, pool: MCPClientPool):
 
     yield _result(state.figure_json, state.plot_spec, state.data_profile)
 
+    # Save the exchange to history so future queries can reference it
+    chart_title = (state.data_profile or {}).get("title") or resolved_query
+    store.add_turn(session_id, "user", original_query)
+    store.add_turn(session_id, "assistant", f"Showed chart: {chart_title}")
+
 
 # ---------------------------------------------------------------------------
 # Endpoints
@@ -136,8 +165,12 @@ async def _run_pipeline(query: str, pool: MCPClientPool):
 @app.post("/query")
 async def query_endpoint(request: QueryRequest, req: Request):
     pool: MCPClientPool = req.app.state.pool
+    store: ConversationStore = req.app.state.store
+
+    session_id = request.session_id or str(uuid.uuid4())
+
     return StreamingResponse(
-        _run_pipeline(request.q, pool),
+        _run_pipeline(request.q, session_id, pool, store),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -146,12 +179,20 @@ async def query_endpoint(request: QueryRequest, req: Request):
     )
 
 
+@app.delete("/session/{session_id}")
+async def clear_session(session_id: str, req: Request):
+    req.app.state.store.clear(session_id)
+    return {"cleared": session_id}
+
+
 @app.get("/health")
 async def health(req: Request):
     pool: MCPClientPool = req.app.state.pool
+    store: ConversationStore = req.app.state.store
     return {
         "status": "ok",
         "dc_api_key_set": bool(os.getenv("DC_API_KEY")),
         "pool_size": POOL_SIZE,
         "pool_available": pool.available,
+        "active_sessions": store.session_count,
     }

@@ -48,6 +48,11 @@ class PlotSpec(BaseModel):
 
 class QueryRequest(BaseModel):
     q: str = Field(description="Natural language data question from the user")
+    session_id: str | None = Field(
+        default=None,
+        description="Opaque session identifier returned by the server on first request. "
+                    "Send it back on follow-up queries to enable conversation memory.",
+    )
 
 
 class SSEEvent(BaseModel):
