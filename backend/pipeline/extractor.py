@@ -2,20 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import shutil
-import sys
-from pathlib import Path
 from typing import Any
 
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import ToolException
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_openai import ChatOpenAI
 
 from .models import GenericExtractionResult, PipelineState
-
-_UVX_PATH = shutil.which("uvx") or str(Path(sys.executable).parent / "uvx")
 
 _TRANSIENT_ERROR_KEYWORDS = (
     "504", "gateway timeout", "503", "502",
@@ -149,27 +143,12 @@ def _count_distinct_entities(rows: list[dict[str, Any]]) -> int:
     return len({v for v in values if v and v.lower() != "none"})
 
 
-async def extract_datacommons(state: PipelineState) -> PipelineState:
-    dc_api_key = os.getenv("DC_API_KEY")
-    if not dc_api_key:
-        raise ValueError("DC_API_KEY is not set.")
-
-    mcp_client = MultiServerMCPClient(
-        {
-            "datacommons": {
-                "command": _UVX_PATH,
-                "args": ["datacommons-mcp", "serve", "stdio"],
-                "transport": "stdio",
-                "env": {**os.environ, "DC_API_KEY": dc_api_key},
-            }
-        }
-    )
-
-    if hasattr(mcp_client, "get_tools_sync"):
-        tools = mcp_client.get_tools_sync()
-    else:
-        tools = await mcp_client.get_tools()
-
+async def extract_datacommons(state: PipelineState, tools: list[Any]) -> PipelineState:
+    """
+    Run the Data Commons extraction agent using a pre-fetched list of tools.
+    Tools (and the underlying MCP subprocess) are provided by MCPClientPool,
+    so no subprocess is spawned here.
+    """
     expected_tool_names = {
         (getattr(t, "name", "") or "").strip()
         for t in tools

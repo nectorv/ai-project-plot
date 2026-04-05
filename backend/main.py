@@ -3,14 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from pipeline import (
+    MCPClientPool,
     PipelineState,
     QueryRequest,
     extract_datacommons,
@@ -32,9 +34,27 @@ if _dotenv_path:
     load_dotenv(_dotenv_path, override=True)
 
 # ---------------------------------------------------------------------------
+# Lifespan — pool is created once at startup, closed at shutdown
+# ---------------------------------------------------------------------------
+POOL_SIZE = int(os.getenv("MCP_POOL_SIZE", "3"))
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print(f"[startup] Initializing MCP client pool (size={POOL_SIZE})...")
+    pool = MCPClientPool(size=POOL_SIZE)
+    await pool.initialize()
+    app.state.pool = pool
+    print(f"[startup] Pool ready — {pool.available} clients available.")
+    yield
+    print("[shutdown] Closing MCP client pool...")
+    await pool.close()
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-app = FastAPI(title="AI Project Plot API")
+app = FastAPI(title="AI Project Plot API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -48,17 +68,13 @@ app.add_middleware(
 # SSE helpers
 # ---------------------------------------------------------------------------
 def _sse(event: dict) -> str:
-    """Format a dict as an SSE data line."""
     return f"data: {json.dumps(event)}\n\n"
-
 
 def _step(label: str) -> str:
     return _sse({"type": "step", "label": label})
 
-
 def _error(message: str) -> str:
     return _sse({"type": "error", "message": message})
-
 
 def _result(figure_json: str, plot_spec: dict, data_profile: dict) -> str:
     return _sse({
@@ -72,17 +88,18 @@ def _result(figure_json: str, plot_spec: dict, data_profile: dict) -> str:
 # ---------------------------------------------------------------------------
 # Pipeline generator
 # ---------------------------------------------------------------------------
-async def _run_pipeline(query: str):
+async def _run_pipeline(query: str, pool: MCPClientPool):
     state = PipelineState(request=query)
 
     # --- Step 1: Route ---
     yield _step("Routing task...")
     state = route_task(state)
 
-    # --- Step 2: Extract ---
-    yield _step("Fetching data from Data Commons (this may take ~15s)...")
+    # --- Step 2: Extract (borrows a client from the pool) ---
+    yield _step(f"Fetching data from Data Commons (pool: {pool.available}/{POOL_SIZE} free)...")
     try:
-        state = await extract_datacommons(state)
+        async with pool.acquire() as (_, tools):
+            state = await extract_datacommons(state, tools)
     except Exception as exc:
         yield _error(f"Data extraction failed: {exc}")
         return
@@ -97,7 +114,6 @@ async def _run_pipeline(query: str):
     # --- Step 4: Plan plot ---
     yield _step("Planning the best chart type...")
     try:
-        # plan_plot calls llm.invoke() synchronously — offload to a thread
         state = await asyncio.to_thread(plan_plot, state)
     except Exception as exc:
         yield _error(f"Plot planning failed: {exc}")
@@ -115,20 +131,27 @@ async def _run_pipeline(query: str):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoints
 # ---------------------------------------------------------------------------
 @app.post("/query")
-async def query_endpoint(request: QueryRequest):
+async def query_endpoint(request: QueryRequest, req: Request):
+    pool: MCPClientPool = req.app.state.pool
     return StreamingResponse(
-        _run_pipeline(request.q),
+        _run_pipeline(request.q, pool),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # disable nginx buffering if behind proxy
+            "X-Accel-Buffering": "no",
         },
     )
 
 
 @app.get("/health")
-async def health():
-    return {"status": "ok", "dc_api_key_set": bool(os.getenv("DC_API_KEY"))}
+async def health(req: Request):
+    pool: MCPClientPool = req.app.state.pool
+    return {
+        "status": "ok",
+        "dc_api_key_set": bool(os.getenv("DC_API_KEY")),
+        "pool_size": POOL_SIZE,
+        "pool_available": pool.available,
+    }
