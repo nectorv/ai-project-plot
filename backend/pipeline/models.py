@@ -70,9 +70,7 @@ class PipelineState:
         self.request: str = request
 
         # route_task
-        self.task_type: str | None = None
         self.is_comparison: bool = False
-        self.source_plan: str | None = None
 
         # extract_datacommons
         self.raw_payload: dict | None = None

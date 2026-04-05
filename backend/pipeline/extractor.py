@@ -171,7 +171,6 @@ async def extract_datacommons(state: PipelineState, tools: list[Any]) -> Pipelin
     )
 
     request_with_task = (
-        f"Task type hint: {state.task_type}. "
         f"User request: {state.request}\n"
         f"{comparison_hint}"
     )
