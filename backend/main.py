@@ -7,15 +7,20 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+CACHE_MAX = int(os.getenv("CACHE_MAX", "256"))
+CACHE_TTL = int(os.getenv("CACHE_TTL_SECONDS", str(6 * 60 * 60)))
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from pipeline import (
+    CachedResult,
     ConversationStore,
     MCPClientPool,
     PipelineState,
+    QueryCache,
     QueryRequest,
     extract_datacommons,
     normalize_and_validate,
@@ -50,7 +55,9 @@ async def lifespan(app: FastAPI):
     app.state.pool = pool
 
     app.state.store = ConversationStore()
+    app.state.cache = QueryCache(maxsize=CACHE_MAX, ttl=CACHE_TTL)
     print(f"[startup] Pool ready — {pool.available} clients available.")
+    print(f"[startup] Query cache: max={CACHE_MAX} entries, ttl={CACHE_TTL}s.")
     yield
 
     print("[shutdown] Closing MCP client pool...")
@@ -99,6 +106,7 @@ async def _run_pipeline(
     session_id: str,
     pool: MCPClientPool,
     store: ConversationStore,
+    cache: QueryCache,
 ):
     # Always send session_id first so the client can persist it
     yield _sse({"type": "session", "session_id": session_id})
@@ -112,6 +120,16 @@ async def _run_pipeline(
             yield _sse({"type": "resolved", "original": original_query, "resolved": resolved_query})
     else:
         resolved_query = original_query
+
+    # --- Cache check ---
+    cached = cache.get(resolved_query)
+    if cached:
+        yield _step("Cache hit — returning stored result instantly.")
+        yield _result(cached.figure_json, cached.plot_spec, cached.data_profile)
+        chart_title = cached.data_profile.get("title") or resolved_query
+        store.add_turn(session_id, "user", original_query)
+        store.add_turn(session_id, "assistant", f"Showed chart: {chart_title}")
+        return
 
     state = PipelineState(request=resolved_query)
 
@@ -153,6 +171,13 @@ async def _run_pipeline(
 
     yield _result(state.figure_json, state.plot_spec, state.data_profile)
 
+    # Store result in cache for future identical queries
+    cache.set(resolved_query, CachedResult(
+        figure_json=state.figure_json,
+        plot_spec=state.plot_spec,
+        data_profile=state.data_profile,
+    ))
+
     # Save the exchange to history so future queries can reference it
     chart_title = (state.data_profile or {}).get("title") or resolved_query
     store.add_turn(session_id, "user", original_query)
@@ -166,11 +191,12 @@ async def _run_pipeline(
 async def query_endpoint(request: QueryRequest, req: Request):
     pool: MCPClientPool = req.app.state.pool
     store: ConversationStore = req.app.state.store
+    cache: QueryCache = req.app.state.cache
 
     session_id = request.session_id or str(uuid.uuid4())
 
     return StreamingResponse(
-        _run_pipeline(request.q, session_id, pool, store),
+        _run_pipeline(request.q, session_id, pool, store, cache),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -189,10 +215,14 @@ async def clear_session(session_id: str, req: Request):
 async def health(req: Request):
     pool: MCPClientPool = req.app.state.pool
     store: ConversationStore = req.app.state.store
+    cache: QueryCache = req.app.state.cache
     return {
         "status": "ok",
         "dc_api_key_set": bool(os.getenv("DC_API_KEY")),
         "pool_size": POOL_SIZE,
         "pool_available": pool.available,
         "active_sessions": store.session_count,
+        "cache_entries": cache.size,
+        "cache_max": cache.maxsize,
+        "cache_ttl_seconds": cache.ttl,
     }

@@ -1,3 +1,4 @@
+from .cache import CachedResult, QueryCache
 from .extractor import extract_datacommons
 from .mcp_pool import MCPClientPool
 from .models import PipelineState, QueryRequest
@@ -9,6 +10,8 @@ from .router import route_task
 from .session_store import ConversationStore
 
 __all__ = [
+    "CachedResult",
+    "QueryCache",
     "MCPClientPool",
     "ConversationStore",
     "PipelineState",
