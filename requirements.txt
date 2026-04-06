@@ -24,3 +24,13 @@ requests
 
 # Tooling
 uv
+
+# New data source libraries
+yfinance
+pytrends
+openmeteo-requests
+requests-cache
+retry-requests
+wbdata
+fredapi
+eurostat

@@ -138,7 +138,7 @@ async def _run_pipeline(
     state = route_task(state)
 
     # --- Step 2: Extract ---
-    yield _step(f"Fetching data from Data Commons (pool: {pool.available}/{POOL_SIZE} free)...")
+    yield _step(f"Fetching data (pool: {pool.available}/{POOL_SIZE} free)...")
     try:
         async with pool.acquire() as (_, tools):
             state = await extract_datacommons(state, tools)

@@ -29,6 +29,12 @@ if "session_id" not in st.session_state:
 if "history" not in st.session_state:
     st.session_state.history = []               # list of {query, resolved, title, figure_json, spec, profile}
 
+# Clear the input box on the NEXT rerun (after a successful query),
+# before the text_area widget is instantiated.
+if st.session_state.get("_clear_input"):
+    st.session_state["query_input"] = ""
+    st.session_state["_clear_input"] = False
+
 # ---------------------------------------------------------------------------
 # Sidebar — conversation history + controls
 # ---------------------------------------------------------------------------
@@ -182,8 +188,8 @@ if run and query.strip():
                         "profile": profile,
                     })
                     st.session_state.history.append(current_turn)
-                    # Clear the input box for the next follow-up
-                    st.session_state["query_input"] = ""
+                    # Flag the input to be cleared on the next rerun
+                    st.session_state["_clear_input"] = True
 
     except requests.exceptions.ConnectionError:
         status_box.error(
