@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 
 import plotly.io as pio
 import requests
 import streamlit as st
 
-BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 
 # ---------------------------------------------------------------------------
 # Page config
