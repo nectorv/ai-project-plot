@@ -66,10 +66,12 @@ with st.sidebar:
 # Example queries
 # ---------------------------------------------------------------------------
 EXAMPLES = [
-    "Show the evolution of GDP in France vs Germany from 2000 to 2025",
-    "Compare CO2 emissions per capita for the USA, China, and India over the last 20 years",
-    "What is the current unemployment rate in Spain?",
-    "Show life expectancy trends in Japan and Brazil from 1990 to 2020",
+    "Show Apple vs Microsoft vs Google stock price over the past 2 years",
+    "Compare average temperature in Paris vs London vs Berlin in 2023",
+    "Google Trends: compare interest in Python, JavaScript and Rust over the last 5 years",
+    "Show GDP per capita for France, Germany and USA from 2000 to 2023 (World Bank)",
+    "Compare EU unemployment rates in France, Germany, Spain and Italy from 2010 to 2023",
+    "Show CO2 emissions per capita for the USA, China, and India over the last 20 years",
 ]
 
 with st.expander("Example queries", expanded=not st.session_state.history):
