@@ -5,6 +5,7 @@ langchain-core
 langchain-mcp-adapters
 pydantic
 pandas
+plotly
 fastapi
 uvicorn[standard]
 uv
